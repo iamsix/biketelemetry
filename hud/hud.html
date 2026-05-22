@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <!-- <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&icon_names=elevation,speed" /> -->
+    <style>
+        body {
+            background: transparent;
+            overflow: hidden;
+            font-family: 'Arial Black', sans-serif;
+        }
+
+        /* The Map HUD Container */
+        #hud-container {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 300px;
+            height: 300px;
+            border: 5px solid #fff;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+            border-radius: 10px;
+            /* Make 50% for circular GTA IV style */
+            overflow: hidden;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Stats Overlay */
+        #stats {
+            position: absolute;
+            bottom: 20px;
+            left: 340px;
+            color: white;
+            text-shadow: 2px 2px #000;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="hud-container">
+        <div id="map"></div>
+    </div>
+    <div id="stats">
+        <!-- sync_problem to show stale data? -->
+        <!-- <span class="material-symbols-outlined">
+                speed
+            </span> -->
+        <div id="speed">0 KM/H</div>
+        <!-- bolt_boost -->
+        <div id="power">PWR: 0 W</div>
+        <!-- probably 'cycle' ?? or 'cadence' but not sure.. -->
+        <div id="cadence">CAD: 0 rpm</div>
+        <!-- cardiology -->
+        <div id="heart_rate">HR: 0 bpm</div>
+        <!-- straighten maybe? timeline? -->
+        <div id="dist">DIST: 0m</div>
+        <!-- <span class="material-symbols-outlined">
+            elevation
+        </span> -->
+        <div id="climb">CLIMB: 0m</div>
+        <!-- altitude for grade%? or maybe tools_level or square_foot, or switch climbg/grade -->
+        <div id="grade">GR: 0%</div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map', { zoomControl: false }).setView([0, 0], 13);
+
+        // Use OpenCycleMap or standard OSM
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OSM'
+        }).addTo(map);
+
+        let trackLine = L.polyline([], { color: '#00008B', weight: 4 }).addTo(map);
+        // TODO: Custom marker cycling
+        let marker = L.marker([0, 0], {}).addTo(map);
+
+        // --- Dynamic Zoom Logic ---
+        let zoomLevels = [11, 13, 15]; // 1km-ish to 10km-ish
+        let delayTime = [15000, 15000, 30000];
+        let zoomIdx = 0;
+
+        function scheduleZoomChange() {
+            setTimeout(() => {
+                zoomIdx = (zoomIdx + 1) % zoomLevels.length;
+                map.setZoom(zoomLevels[zoomIdx], { animate: true });
+                scheduleZoomChange(); // Schedule next change with correct delay
+            }, delayTime[zoomIdx]);
+        }
+        scheduleZoomChange();
+
+        async function updateDashboard() {
+            const res = await fetch('/api/v1/session');
+            const data = await res.json();
+
+            if (data.points.length > 0) {
+                const lastPoint = data.points[data.points.length - 1];
+
+                // Update Map
+                trackLine.setLatLngs(data.points);
+                marker.setLatLng(lastPoint);
+                map.panTo(lastPoint);
+
+                // Update Stats
+                const metrics = data.last_metrics.metrics || {};
+                document.getElementById('speed').innerText = `${metrics.speed_kmh ?? 0} KM/H`;
+                document.getElementById('heart_rate').innerText = `HR: ${metrics.heart_rate?.toFixed(0) ?? 0} bpm`;
+                document.getElementById('power').innerText = `PWR: ${metrics.power ?? 0} W`;
+                document.getElementById('cadence').innerText = `CAD: ${metrics.cadence ?? 0} rpm`;
+                document.getElementById('climb').innerText = `CLIMB: ${data.total_climb_m.toFixed(0)}m`;
+                document.getElementById('grade').innerText = `GR: ${metrics.grade_percent?.toFixed(0) ?? 0}%`;
+                const distMeters = data.total_distance_m ?? 0;
+                const distText = distMeters < 1000
+                    ? `DIST: ${distMeters.toFixed(0)}m`
+                    : `DIST: ${(distMeters / 1000).toFixed(1)}km`;
+                document.getElementById('dist').innerText = distText;
+            }
+        }
+
+        // Update every 4 seconds
+        setInterval(updateDashboard, 4000);
+        updateDashboard(); // Initial call
+    </script>
+
+</body>
+
+</html>
