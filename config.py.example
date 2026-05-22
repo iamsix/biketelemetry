@@ -1,0 +1,6 @@
+DESTINATION_URL = "http://example.com:8000/api/v1/telemetry"
+POST_INTERVAL = 5.0  # Seconds
+# You can set these to 0 to find the first availble device (of the type)
+HR_ID = 12345
+PWR_ID = 12345
+API_KEY = "abc123"
