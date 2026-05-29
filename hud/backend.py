@@ -134,39 +134,6 @@ def fetch_weather_for_location(location):
         return {"error": "fetch_failed", "reason": str(e)}
 
 
-WEMOJI ={
-    # Pirateweather
-    "cloudy": "\N{CLOUD}",
-    "partly-cloudy-day": "\N{WHITE SUN WITH SMALL CLOUD}",
-    "partly-cloudy-night": "\N{CLOUD}\N{CRESCENT MOON}",
-    "clear-day": "\N{BLACK SUN WITH RAYS}\N{VARIATION SELECTOR-16}",
-    "clear-night": "\N{CRESCENT MOON}",
-    "rain": "\N{CLOUD WITH RAIN}", 
-    "snow": "\N{SNOWFLAKE}\N{VARIATION SELECTOR-16}", 
-    "sleet": "\N{SNOWFLAKE}\N{VARIATION SELECTOR-16}\N{CLOUD WITH RAIN}", #doubles for yr
-    "wind": "\N{DASH SYMBOL}",
-    "fog": "\N{FOG}",
-}
-
-
-def bearing_to_arrow(bearing):
-    directions = {
-        "↓": (337.5, 22.5),
-        "↘︎": (292.5, 337.5),
-        "→": (247.5, 292.5),
-        "↗︎": (202.5, 247.5),
-        "↑": (157.5, 202.5),
-        "↖︎": (112.5 ,157.5),
-        "←": (67.5, 112.5),
-        "↙︎": (22.5, 67.5)
-    }
-    for direction in directions:
-        min, max = directions[direction]
-        if bearing >= min and bearing <= max:
-            return direction
-        elif bearing >= directions['↓'][0] or bearing <= directions['↓'][1]:
-            return '↓'
-
 @app.get("/api/v1/weather")
 async def get_weather():
     """Return cached weather; refresh from PirateWeather if older than 60 minutes."""
