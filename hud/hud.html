@@ -37,10 +37,64 @@
             position: absolute;
             bottom: 20px;
             left: 340px;
+            width: 130px;
             color: white;
             text-shadow: 2px 2px #000;
             background: rgba(0, 0, 0, 0.4);
             padding: 10px;
+        }
+
+        #weather-panel {
+            position: absolute;
+            left: 20px;
+            bottom: 320px;
+            width: 180px;
+            z-index: 10;
+            color: white;
+            text-shadow: 2px 2px #000;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 8px;
+            border-radius: 10px 10px 0 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        #weather-panel span {
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        .weather-icon {
+            font-size: 1.2em;
+            width: 1.2em;
+            text-align: center;
+        }
+
+        .weather-info {
+            flex: 1;
+            white-space: normal;
+            overflow: visible;
+            text-overflow: unset;
+            font-size: 0.95em;
+        }
+
+        .wind-info {
+            font-size: 0.95em;
+            min-width: 48px;
+            text-align: right;
+        }
+
+        .stale-badge {
+            display: none;
+            margin-left: 6px;
+            background: rgba(255, 165, 0, 0.95);
+            color: #000;
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 0.9em;
         }
     </style>
 </head>
@@ -55,25 +109,46 @@
         <!-- <span class="material-symbols-outlined">
                 speed
             </span> -->
-        <div id="speed">0 KM/H</div>
+        <div id="speed"><span class="metric-value">0 KM/H</span> <span class="stale-badge"
+                data-metric-key="speed_kmh">⚠️</span></div>
         <!-- bolt_boost -->
-        <div id="power">PWR: 0 W</div>
+        <div id="power"><span class="metric-value">PWR: 0 W</span> <span class="stale-badge"
+                data-metric-key="power">⚠️</span></div>
         <!-- probably 'cycle' ?? or 'cadence' but not sure.. -->
-        <div id="cadence">CAD: 0 rpm</div>
+        <div id="cadence"><span class="metric-value">CAD: 0 rpm</span> <span class="stale-badge"
+                data-metric-key="cadence">⚠️</span></div>
         <!-- cardiology -->
-        <div id="heart_rate">HR: 0 bpm</div>
+        <div id="heart_rate"><span class="metric-value">HR: 0 bpm</span> <span class="stale-badge"
+                data-metric-key="heart_rate">⚠️</span></div>
         <!-- straighten maybe? timeline? -->
         <div id="dist">DIST: 0m</div>
         <!-- <span class="material-symbols-outlined">
             elevation
         </span> -->
-        <div id="climb">CLIMB: 0m</div>
+        <div id="climb"><span class="metric-value">CLIMB: 0m</span> <span class="stale-badge"
+                data-metric-key="elevation_m">⚠️</span></div>
         <!-- altitude for grade%? or maybe tools_level or square_foot, or switch climbg/grade -->
-        <div id="grade">GR: 0%</div>
+        <div id="grade"><span class="metric-value">GR: 0%</span> <span class="stale-badge"
+                data-metric-key="elevation_m">⚠️</span></div>
+    </div>
+    <div id="weather-panel">
+        <span class="weather-icon">🌡️</span>
+        <span class="weather-info">--</span>
+        <span class="wind-info">--</span>
     </div>
 
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script>
+
+        // Update per-metric stale badges using backend-provided flags
+        function updatePerMetricStale(flags) {
+            document.querySelectorAll('.stale-badge').forEach(el => {
+                const key = el.dataset.metricKey;
+                const isStale = flags && (flags[key] === true);
+                el.style.display = isStale ? 'inline-block' : 'none';
+            });
+        }
+
         const map = L.map('map', { zoomControl: false }).setView([0, 0], 13);
 
         // Use OpenCycleMap or standard OSM
@@ -99,6 +174,55 @@
         }
         scheduleZoomChange();
 
+        // Fetch weather (cached server-side) and update HUD. Runs hourly.
+        function iconToEmoji(icon) {
+            switch (icon) {
+                case 'clear-day': return '☀️';
+                case 'clear-night': return '🌕';
+                case 'rain': return '🌧️';
+                case 'snow': return '❄️';
+                case 'sleet': return '🌨️';
+                case 'wind': return '🌬️';
+                case 'fog': return '🌫️';
+                case 'cloudy': return '☁️';
+                case 'partly-cloudy-day': return '⛅';
+                case 'partly-cloudy-night': return '🌥️';
+                case 'hail': return '🌨️';
+                case 'thunderstorm': return '⛈️';
+                case 'tornado': return '🌪️';
+                default: return '🌡️';
+            }
+        }
+
+        function bearingToArrow(bearing) {
+            if (bearing == null || isNaN(bearing)) return '↗';
+            const arrows = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+            return arrows[Math.floor(((bearing % 360) + 360) / 45) % 8];
+        }
+
+        async function fetchWeather() {
+            try {
+                const res = await fetch('/api/v1/weather');
+                const data = await res.json();
+                const cur = data.currently || data.current || {};
+                const temp = cur.temperature ?? cur.temp ?? null;
+                const icon = cur.icon || data.icon || null;
+                const windSpeed = cur.windSpeed ?? cur.wind_speed ?? null;
+                const windBearing = cur.windBearing ?? cur.wind_bearing ?? null;
+                const emoji = iconToEmoji(icon);
+                const arrow = bearingToArrow(windBearing);
+                const weatherText = temp !== null ? `${Math.round(temp)}°C` : (data.error ? '--' : '--');
+                const windText = windSpeed !== null ? `${arrow} ${Math.round(windSpeed)} km/h` : '--';
+                document.querySelector('#weather-panel .weather-icon').innerText = emoji;
+                document.querySelector('#weather-panel .weather-info').innerText = weatherText;
+                document.querySelector('#weather-panel .wind-info').innerText = windText;
+            } catch (e) {
+                document.querySelector('#weather-panel .weather-icon').innerText = '🌡️';
+                document.querySelector('#weather-panel .weather-info').innerText = '--';
+                document.querySelector('#weather-panel .wind-info').innerText = '--';
+            }
+        }
+
         async function updateDashboard() {
             const res = await fetch('/api/v1/session');
             const data = await res.json();
@@ -113,23 +237,32 @@
 
                 // Update Stats
                 const metrics = data.last_metrics.metrics || {};
-                document.getElementById('speed').innerText = `${metrics.speed_kmh ?? 0} KM/H`;
-                document.getElementById('heart_rate').innerText = `HR: ${metrics.heart_rate?.toFixed(0) ?? 0} bpm`;
-                document.getElementById('power').innerText = `PWR: ${metrics.power ?? 0} W`;
-                document.getElementById('cadence').innerText = `CAD: ${metrics.cadence ?? 0} rpm`;
-                document.getElementById('climb').innerText = `CLIMB: ${data.total_climb_m.toFixed(0)}m`;
-                document.getElementById('grade').innerText = `GR: ${metrics.grade_percent?.toFixed(0) ?? 0}%`;
+                document.querySelector('#speed .metric-value').innerText = `${metrics.speed_kmh ?? 0} KM/H`;
+                document.querySelector('#heart_rate .metric-value').innerText = `HR: ${metrics.heart_rate?.toFixed(0) ?? 0} bpm`;
+                document.querySelector('#power .metric-value').innerText = `PWR: ${metrics.power ?? 0} W`;
+                document.querySelector('#cadence .metric-value').innerText = `CAD: ${metrics.cadence ?? 0} rpm`;
+                document.querySelector('#climb .metric-value').innerText = `CLIMB: ${data.total_climb_m.toFixed(0)}m`;
+                document.querySelector('#grade .metric-value').innerText = `GR: ${metrics.grade_percent?.toFixed(0) ?? 0}%`;
                 const distMeters = data.total_distance_m ?? 0;
                 const distText = distMeters < 1000
                     ? `DIST: ${distMeters.toFixed(0)}m`
                     : `DIST: ${(distMeters / 1000).toFixed(1)}km`;
                 document.getElementById('dist').innerText = distText;
+
+                // Use backend-provided per-metric stale flags if available
+                const metricFlags = data.last_metrics?.metrics_stale || null;
+                if (metricFlags) {
+                    updatePerMetricStale(metricFlags);
+                }
             }
         }
 
         // Update every 4 seconds
         setInterval(updateDashboard, 4000);
         updateDashboard(); // Initial call
+        // Weather: fetch immediately and then hourly
+        fetchWeather();
+        setInterval(fetchWeather, 60 * 60 * 1000);
     </script>
 
 </body>

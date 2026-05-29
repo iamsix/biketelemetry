@@ -27,7 +27,7 @@ logger = logging.getLogger("telemetry_daemon")
 # There is commented out code in the gps_worker that would attempt to detect
 # if the GPS data is stale and reset it again, but for now I'm just doing it once at startup since it seems to be working fine
 # NOTE sometimes it may fail on first start, it'll output an error if it does
-# If so just restart the script and watch for a TX thing
+# If so just restart the script and watch for an ACK message
 subprocess.run(["ubxtool", "-p", "RESET"], check=True)
 
 

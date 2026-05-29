@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import uvicorn
 import math
 from collections import deque
+import os
+import requests
 
 app = FastAPI()
 
@@ -19,6 +21,7 @@ session_data = {
     "total_distance_m": 0.0,
     "total_climb_m": 0.0,
     "last_metrics": {},
+    "weather_cache": None,
     "start_time": datetime.now(),
     "last_update_time": None  # Track when last telemetry was received
 }
@@ -105,6 +108,78 @@ async def get_session():
     
     # print(session_data["last_metrics"])
     return session_data
+
+
+def fetch_weather_for_location(location):
+    """Fetch weather from PirateWeather (or similar) and cache result.
+
+    Expects `location` as dict with `lat` and `lon`. API key pulled from
+    `PIRATEWEATHER_KEY` env var. Returns parsed JSON or None on failure.
+    """
+    key = os.environ.get('PIRATEWEATHER_KEY')
+    if not key:
+        return {"error": "no_api_key"}
+
+    lat = location.get('lat') if location else None
+    lon = location.get('lon') if location else None
+    if lat is None or lon is None:
+        return {"error": "no_location"}
+
+    url = f"https://api.pirateweather.net/forecast/{key}/{lat},{lon}?units=si&exclude=minutely,alerts,flags"
+    try:
+        resp = requests.get(url, timeout=6)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": "fetch_failed", "reason": str(e)}
+
+
+WEMOJI ={
+    # Pirateweather
+    "cloudy": "\N{CLOUD}",
+    "partly-cloudy-day": "\N{WHITE SUN WITH SMALL CLOUD}",
+    "partly-cloudy-night": "\N{CLOUD}\N{CRESCENT MOON}",
+    "clear-day": "\N{BLACK SUN WITH RAYS}\N{VARIATION SELECTOR-16}",
+    "clear-night": "\N{CRESCENT MOON}",
+    "rain": "\N{CLOUD WITH RAIN}", 
+    "snow": "\N{SNOWFLAKE}\N{VARIATION SELECTOR-16}", 
+    "sleet": "\N{SNOWFLAKE}\N{VARIATION SELECTOR-16}\N{CLOUD WITH RAIN}", #doubles for yr
+    "wind": "\N{DASH SYMBOL}",
+    "fog": "\N{FOG}",
+}
+
+
+def bearing_to_arrow(bearing):
+    directions = {
+        "↓": (337.5, 22.5),
+        "↘︎": (292.5, 337.5),
+        "→": (247.5, 292.5),
+        "↗︎": (202.5, 247.5),
+        "↑": (157.5, 202.5),
+        "↖︎": (112.5 ,157.5),
+        "←": (67.5, 112.5),
+        "↙︎": (22.5, 67.5)
+    }
+    for direction in directions:
+        min, max = directions[direction]
+        if bearing >= min and bearing <= max:
+            return direction
+        elif bearing >= directions['↓'][0] or bearing <= directions['↓'][1]:
+            return '↓'
+
+@app.get("/api/v1/weather")
+async def get_weather():
+    """Return cached weather; refresh from PirateWeather if older than 60 minutes."""
+    cache = session_data.get('weather_cache') or {}
+    if cache and cache.get('ts') and datetime.now() - cache['ts'] < timedelta(minutes=60):
+        return cache.get('data', {})
+
+    # Determine location from last_metrics
+    location = session_data.get('last_metrics', {}).get('location')
+    data = fetch_weather_for_location(location)
+    if not data.get('error'):
+        session_data['weather_cache'] = {'ts': datetime.now(), 'data': data}
+    return data
 
 @app.get("/api/v1/reset")
 async def reset_session():
