@@ -72,6 +72,7 @@ class TelemetryAggregator:
 
     def add_ant_power_data(self, power, cadence):
         """Updates both power and cadence within a single lock window to ensure atomicity."""
+        logger.debug(f"PW update: {power}W - {cadence}rpm")
         with self.lock:
             if power is not None:
                 self.buffers["power"].append(power)
@@ -120,13 +121,24 @@ aggregator = TelemetryAggregator()
 
 # --- HARDWARE THREADS ---
 def ant_worker():
-    def on_hr(pg, name, d): aggregator.add_sample("hr", d.heart_rate)
+    def on_hr(pg, name, d): 
+        hr = getattr(d, 'heart_rate', None)
+        if hr is not None:
+            aggregator.add_sample("hr", d.heart_rate)
     def on_pw(pg, name, d):
-        # might use avg_power here but since we're doing 5s averaging anyway it's probably good
-        # avg of avg seems odd
-        # in testing avg_power is *weird* it seems to randomly jump a lot which is exactly the opposite I'd expect of "average"
-        # it will go 4w to 60 even when holding 60 seemingly (instantaneous power is steady at 60)
-        aggregator.add_ant_power_data(d.instantaneous_power, d.cadence)
+        try:
+            power = getattr(d, 'instantaneous_power', None)
+            cadence = getattr(d, 'cadence', None)
+            if power is None:
+                power = getattr(d, 'power', None)
+            aggregator.add_ant_power_data(power, cadence)
+
+            if not power and not cadence:
+                torque = getattr(d, 'accumulated_torque', None)
+                logger.debug(f"Got power page {pg} {name} - maybe torque update and I have to calc it manually?: {torque}")
+                
+        except Exception as e:
+            logger.error(f"Error in power callback: {e}")
 
     try:
         node = Node()
