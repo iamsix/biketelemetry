@@ -26,9 +26,36 @@ logger = logging.getLogger("telemetry_daemon")
 # As far as I can tell doing it once at the start will fix it 'forever' until reboot
 # There is commented out code in the gps_worker that would attempt to detect
 # if the GPS data is stale and reset it again, but for now I'm just doing it once at startup since it seems to be working fine
-# NOTE sometimes it may fail on first start, it'll output an error if it does
-# If so just restart the script and watch for an ACK message
-subprocess.run(["ubxtool", "-p", "RESET"], check=True)
+
+def run_ubxtool_reset(max_retries=3, delay_seconds=2):
+    """Run ubxtool RESET and retry if the command fails on first attempt."""
+    for attempt in range(1, max_retries + 1):
+        logger.info(f"Running ubxtool RESET (attempt {attempt}/{max_retries})")
+        result = subprocess.run(
+            ["ubxtool", "-p", "RESET"],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            logger.info("ubxtool RESET succeeded")
+            return True
+
+        error_message = result.stderr.strip() or result.stdout.strip()
+        logger.warning(
+            "ubxtool RESET failed: %s%s",
+            error_message,
+            "; retrying..." if attempt < max_retries else ""
+        )
+
+        if attempt < max_retries:
+            time.sleep(delay_seconds)
+
+    logger.error("ubxtool RESET failed after %s attempts", max_retries)
+    return False
+
+
+run_ubxtool_reset()
 
 
 # I'm really not sure of this ant reading method.
@@ -177,7 +204,8 @@ def gps_worker():
                 # if len(last_gps) == last_gps.maxlen and all(coord == last_gps[0] for coord in last_gps):
                 #     logger.warning("GPS data appears stale. Attempting to reset gps chip...")
                 #     session.close()
-                
+
+                #     Maybe change this to use the func above
                 #     subprocess.run(["ubxtool", "-p", "RESET"], check=True)
                 #     break
                 # ###
