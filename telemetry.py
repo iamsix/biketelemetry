@@ -1,6 +1,5 @@
 ## This file lives on a remote belabox device and sends telemetry to the backend.py server
 
-
 import time
 import requests
 import subprocess
@@ -13,19 +12,12 @@ from openant.easy.node import Node
 from openant.devices import ANTPLUS_NETWORK_KEY
 from openant.devices.heart_rate import HeartRate
 from openant.devices.power_meter import PowerMeter
-#from openant.devices.bike_speed_cadence import BikeCadenceData
 
 # --- CONFIGURATION ---
 import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("telemetry_daemon")
-
-# Due to a bug in the u-blox 7 GPS module I have to send this RESET command
-# otherwise it repeats the same GPS location repeatedly (even though it updates the timestamp and says 3d fix)
-# As far as I can tell doing it once at the start will fix it 'forever' until reboot
-# There is commented out code in the gps_worker that would attempt to detect
-# if the GPS data is stale and reset it again, but for now I'm just doing it once at startup since it seems to be working fine
 
 def run_ubxtool_reset(max_retries=3, delay_seconds=2):
     """Run ubxtool RESET and retry if the command fails on first attempt."""
@@ -54,25 +46,7 @@ def run_ubxtool_reset(max_retries=3, delay_seconds=2):
     logger.error("ubxtool RESET failed after %s attempts", max_retries)
     return False
 
-
 run_ubxtool_reset()
-
-
-# I'm really not sure of this ant reading method.
-# it seems to only update every once in a while, possibly randomly, maybe misses things?
-# specs say a power meter should have a 4hz update rate (at fastest), I'm seeing like 5 seconds or more
-
-# compared to wahoo which updates seemingly every second-ish the same ant data?
-# need to test this while on the trainer and check if it insta-updates while I can watch it directly
-
-# Testing on the trainer shows this seems to be working perfectly, it updates every second or two, which is good enough for our 5s averaging window
-# there's also continuous scanning mode but it seems to be completely unecessary based on my testing
-
-# might want to cache data when send fails
-# will need some kind of "bulk update" endpoint for that
-# just to keep the gps points good
-# mind you it'll just 'jump' if not so I don't care that much (speed won't jump cause it's direct from gps)
-
 
 class TelemetryAggregator:
     def __init__(self):
@@ -88,7 +62,8 @@ class TelemetryAggregator:
             "hr": [],
             "power": [],
             "cadence": [],
-            "elevation": [],
+            "gps_elevation": [],  # Separated GPS elevation
+            "dps_elevation": [],  # High priority Baro elevation
             "speed_kmh": [],
         }
 
@@ -98,7 +73,6 @@ class TelemetryAggregator:
                 self.buffers[key].append(value)
 
     def add_ant_power_data(self, power, cadence):
-        """Updates both power and cadence within a single lock window to ensure atomicity."""
         logger.debug(f"PW update: {power}W - {cadence}rpm")
         with self.lock:
             if power is not None:
@@ -114,17 +88,27 @@ class TelemetryAggregator:
             self.gps_time = timestamp
             
             if alt is not None:
-                self.buffers["elevation"].append(alt)
+                self.buffers["gps_elevation"].append(alt)
             
             if speed_ms is not None:
                 self.buffers["speed_kmh"].append(speed_ms * 3.6)
 
+    def add_dps_elevation(self, alt):
+        """Dedicated method for adding barometric altitude."""
+        if alt is not None:
+            with self.lock:
+                self.buffers["dps_elevation"].append(alt)
+
     def flush_and_average(self):
         with self.lock:
             def avg(lst):
-                # Return None for no new samples, so the backend can preserve the
-                # last seen value and mark the metric as stale.
                 return round(sum(lst) / len(lst), 2) if lst else None
+            
+            # --- ELEVATION PRIORITY LOGIC ---
+            # If we have DPS310 readings in this window, use them. Otherwise fallback to GPS.
+            dps_avg = avg(self.buffers["dps_elevation"])
+            gps_avg = avg(self.buffers["gps_elevation"])
+            final_elevation = dps_avg if dps_avg is not None else gps_avg
             
             payload = {
                 "timestamp_gps": self.gps_time,
@@ -134,7 +118,7 @@ class TelemetryAggregator:
                     "heart_rate": avg(self.buffers["hr"]),
                     "power": avg(self.buffers["power"]),
                     "cadence": avg(self.buffers["cadence"]),
-                    "elevation_m": avg(self.buffers["elevation"]),
+                    "elevation_m": final_elevation, 
                     "speed_kmh": avg(self.buffers["speed_kmh"]),
                 }
             }
@@ -144,14 +128,43 @@ class TelemetryAggregator:
 
 # Initialize Shared State
 aggregator = TelemetryAggregator()
-# last_gps = deque(maxlen=10)  # detect GPS staleness if last 10 readings are the same or zero
 
 # --- HARDWARE THREADS ---
+def dps_worker():
+    """Worker thread to read altitude from I2C DPS310."""
+    try:
+        import board
+        from adafruit_dps310.basic import DPS310
+        
+        # Initializes I2C using the SBC's default bus
+        i2c = board.I2C() 
+        dps310 = DPS310(i2c)
+        
+        # Barometric altitude requires a reference sea level pressure to be absolutely accurate.
+        # 1013.25 is standard. If you notice your altitude is consistently off by a static amount,
+        # you can tune this value to match your local QNH.
+        dps310.sea_level_pressure = 1013.25
+        logger.info("DPS310 Barometric Sensor initialized successfully.")
+
+        while True:
+            try:
+                alt = dps310.altitude
+                if alt is not None:
+                    aggregator.add_dps_elevation(alt)
+            except Exception as e:
+                logger.debug(f"DPS310 read error (I2C glitch?): {e}")
+            
+            time.sleep(1) # 1Hz read rate is plenty for elevation 
+
+    except Exception as e:
+        logger.error(f"DPS310 Thread failed to initialize. Ensure I2C is enabled and wired correctly: {e}")
+
 def ant_worker():
     def on_hr(pg, name, d): 
         hr = getattr(d, 'heart_rate', None)
         if hr is not None:
             aggregator.add_sample("hr", d.heart_rate)
+            
     def on_pw(pg, name, d):
         try:
             power = getattr(d, 'instantaneous_power', None)
@@ -178,18 +191,11 @@ def ant_worker():
 
 def gps_worker():
     while True:
-        # Watch for stale data
-        # ubxtool -p RESET or COLDBOOT or WARMBOOT or HOTBOOT ???
         try:
             session = gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
             for report in session:
                 if report['class'] == 'TPV':
                     fix = getattr(report, 'mode', 0)
-
-                    # ### # Auto fix GPS maybe? ###
-                    # if fix > 1 and hasattr(report, 'lat') and hasattr(report, 'lon'):
-                    #     last_gps.append((report.lat, report.lon))
-                    # ####
 
                     aggregator.update_gps(
                         lat = getattr(report, 'lat', 0.0),
@@ -199,17 +205,6 @@ def gps_worker():
                         fix = fix,
                         timestamp = getattr(report, 'time', "1970-01-01T00:00:00.000Z")
                     )
-
-                # ## More auto-fix GPS stuff ####
-                # if len(last_gps) == last_gps.maxlen and all(coord == last_gps[0] for coord in last_gps):
-                #     logger.warning("GPS data appears stale. Attempting to reset gps chip...")
-                #     session.close()
-
-                #     Maybe change this to use the func above
-                #     subprocess.run(["ubxtool", "-p", "RESET"], check=True)
-                #     break
-                # ###
-
         except Exception as e:
             logger.error(f"GPS Thread failed: {e}")
 
@@ -224,12 +219,6 @@ def poster_worker():
         data = aggregator.flush_and_average()
         
         try:
-            ##################### TESTING ##################
-            # logger.info(data)
-            # continue
-            ####################################################
-            
-            # We use a timeout to prevent the thread from hanging on network issues
             response = requests.post(config.DESTINATION_URL, json=data, timeout=2.0)
             if response.status_code != 200:
                 logger.warning(f"Failed to post: HTTP {response.status_code}")
@@ -239,10 +228,12 @@ def poster_worker():
 if __name__ == "__main__":
     t_ant = threading.Thread(target=ant_worker, daemon=True)
     t_gps = threading.Thread(target=gps_worker, daemon=True)
+    t_dps = threading.Thread(target=dps_worker, daemon=True)
     t_post = threading.Thread(target=poster_worker, daemon=True)
 
     t_ant.start()
     t_gps.start()
+    t_dps.start()
     t_post.start()
 
     # Keep main thread alive
